@@ -3,6 +3,7 @@
 import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { verifyOTP } from '@/lib/authClient';
+import { useAuth } from '@/contexts/AuthContext';
 import toast from 'react-hot-toast';
 
 function VerifyOTPContent() {
@@ -12,6 +13,7 @@ function VerifyOTPContent() {
   const [type, setType] = useState('signup');
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { refreshUser } = useAuth();
 
   useEffect(() => {
     const emailParam = searchParams.get('email');
@@ -50,8 +52,9 @@ function VerifyOTPContent() {
       
       if (result.success) {
         toast.success(result.message);
+        // Refresh the auth context to get the updated user state
+        await refreshUser();
         router.push('/schools');
-        router.refresh();
       } else {
         toast.error(result.message);
       }

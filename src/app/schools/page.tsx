@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
@@ -13,6 +13,9 @@ export default function SchoolsPage() {
   const [schools, setSchools] = useState<School[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [deleteLoading, setDeleteLoading] = useState<number | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
   const { user } = useAuth();
   const router = useRouter();
 
@@ -20,59 +23,254 @@ export default function SchoolsPage() {
     fetchSchools();
   }, []);
 
-  const fetchSchools = async () => {
+  const fetchSchools = async (showLoadingToast = false) => {
     try {
+      setLoading(true);
+      setError(null);
+      
+      if (showLoadingToast) {
+        showToast.loading('Loading schools...');
+      }
+
       const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || '';
-      const response = await fetch(`${API_BASE_URL}/api/schools`);
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+      const response = await fetch(`${API_BASE_URL}/api/schools`, {
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error('Schools API endpoint not found');
+        } else if (response.status === 500) {
+          throw new Error('Server error occurred. Please try again later.');
+        } else if (response.status >= 400) {
+          throw new Error(`Request failed with status ${response.status}`);
+        }
+      }
+
       const result = await response.json();
 
       if (result.success) {
+        if (!Array.isArray(result.data)) {
+          throw new Error('Invalid data format received from server');
+        }
         setSchools(result.data);
         setError(null);
+        setRetryCount(0);
+        
+        if (showLoadingToast) {
+          showToast.success(`Loaded ${result.data.length} schools successfully!`);
+        }
       } else {
-        const errorMessage = result.error || 'Failed to fetch schools';
+        const errorMessage = result.error || result.message || 'Failed to fetch schools';
         setError(errorMessage);
         showToast.error(errorMessage);
       }
     } catch (error) {
       console.error('Error fetching schools:', error);
-      const errorMessage = 'An error occurred while fetching schools. Please check your connection.';
+      
+      let errorMessage = 'An unexpected error occurred';
+      
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          errorMessage = 'Request timed out. Please check your connection and try again.';
+        } else if (error.message.includes('fetch')) {
+          errorMessage = 'Network error. Please check your internet connection.';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      
       setError(errorMessage);
-      showToast.networkError();
+      showToast.error(errorMessage);
+      setRetryCount(prev => prev + 1);
     } finally {
       setLoading(false);
     }
   };
 
   const handleDeleteSchool = async (schoolId: number) => {
-    if (!confirm('Are you sure you want to delete this school? This action cannot be undone.')) {
+
+    if (!schoolId || schoolId <= 0) {
+      showToast.error('Invalid school ID');
+      return;
+    }
+
+    if (!user) {
+      showToast.error('You must be logged in to delete schools');
+      router.push('/login');
+      return;
+    }
+
+    const schoolToDelete = schools.find(school => school.id === schoolId);
+    if (!schoolToDelete) {
+      showToast.error('School not found');
+      return;
+    }
+
+    if (schoolToDelete.created_by_email !== user.email) {
+      showToast.error('You can only delete schools you created');
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to delete "${schoolToDelete.name}"?\n\nThis action cannot be undone and will permanently remove all school data.`)) {
       return;
     }
 
     try {
+      setDeleteLoading(schoolId);
+      
       const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || '';
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout for delete
+
       const response = await fetch(`${API_BASE_URL}/api/schools/${schoolId}`, {
         method: 'DELETE',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+        },
       });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('You are not authorized to delete this school');
+        } else if (response.status === 404) {
+          throw new Error('School not found or already deleted');
+        } else if (response.status === 403) {
+          throw new Error('You can only delete schools you created');
+        } else if (response.status >= 500) {
+          throw new Error('Server error occurred. Please try again later.');
+        } else {
+          throw new Error(`Delete failed with status ${response.status}`);
+        }
+      }
 
       const result = await response.json();
 
       if (result.success) {
-        setSchools(schools.filter(school => school.id !== schoolId));
-        showToast.success('School deleted successfully!');
+        setSchools(prevSchools => prevSchools.filter(school => school.id !== schoolId));
+        showToast.success(`"${schoolToDelete.name}" deleted successfully!`);
       } else {
-        const errorMessage = result.error || 'Failed to delete school';
+        const errorMessage = result.error || result.message || 'Failed to delete school';
         showToast.error(errorMessage);
       }
     } catch (error) {
       console.error('Error deleting school:', error);
-      showToast.error('An error occurred while deleting the school. Please try again.');
+      
+      let errorMessage = 'An unexpected error occurred while deleting the school';
+      
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          errorMessage = 'Delete operation timed out. Please try again.';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      
+      showToast.error(errorMessage);
+    } finally {
+      setDeleteLoading(null);
     }
   };
 
   const handleEditSchool = (schoolId: number) => {
-    router.push(`/edit-school/${schoolId}`);
+    // Input validation
+    if (!schoolId || schoolId <= 0) {
+      showToast.error('Invalid school ID');
+      return;
+    }
+
+    // Check if user is authenticated
+    if (!user) {
+      showToast.error('You must be logged in to edit schools');
+      router.push('/login');
+      return;
+    }
+
+    // Find the school to validate ownership
+    const schoolToEdit = schools.find(school => school.id === schoolId);
+    if (!schoolToEdit) {
+      showToast.error('School not found');
+      return;
+    }
+
+    // Check ownership
+    if (schoolToEdit.created_by_email !== user.email) {
+      showToast.error('You can only edit schools you created');
+      return;
+    }
+
+    try {
+      router.push(`/edit-school/${schoolId}`);
+    } catch (error) {
+      console.error('Navigation error:', error);
+      showToast.error('Failed to navigate to edit page');
+    }
   };
+
+  // Validate and sanitize search input
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    
+    // Prevent XSS by limiting length and sanitizing input
+    if (value.length > 100) {
+      showToast.error('Search query too long. Maximum 100 characters allowed.');
+      return;
+    }
+
+    // Basic sanitization - remove potentially harmful characters
+    const sanitizedValue = value.replace(/[<>'"]/g, '');
+    setSearchQuery(sanitizedValue);
+  };
+
+  // Filter schools based on search query
+  const filteredSchools = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return schools;
+    }
+
+    try {
+      const query = searchQuery.toLowerCase().trim();
+      
+      // Additional validation
+      if (query.length < 1) {
+        return schools;
+      }
+
+      return schools.filter((school) => {
+        try {
+          return (
+            school.name?.toLowerCase().includes(query) ||
+            school.address?.toLowerCase().includes(query) ||
+            school.city?.toLowerCase().includes(query) ||
+            school.state?.toLowerCase().includes(query) ||
+            school.email_id?.toLowerCase().includes(query) ||
+            school.contact?.toString().includes(query) ||
+            (school.created_by_email && school.created_by_email.toLowerCase().includes(query))
+          );
+        } catch (error) {
+          console.error('Error filtering school:', school, error);
+          return false;
+        }
+      });
+    } catch (error) {
+      console.error('Error during filtering:', error);
+      showToast.error('Search error occurred');
+      return schools;
+    }
+  }, [schools, searchQuery]);
 
   if (loading) {
     return (
@@ -138,11 +336,32 @@ export default function SchoolsPage() {
           )}
         </div>
 
-        <div className="mb-8">
-          <div className="card-primary p-4">
-            <p className="text-sm text-gray-600">
-              Total Schools: <span className="font-semibold text-primary">{schools.length}</span>
-            </p>
+        {/* Search Bar */}
+        <div className="mb-6">
+          <div className="relative max-w-2xl mx-auto">
+            <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+              <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </div>
+            <input
+              type="text"
+              placeholder="Search schools by name, location, email, contact, or creator..."
+              value={searchQuery}
+              onChange={handleSearchChange}
+              maxLength={100}
+              className="w-full pl-12 pr-4 py-4 text-gray-900 placeholder-gray-500 bg-white border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary transition-all duration-200 shadow-sm hover:shadow-md"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute inset-y-0 right-0 pr-4 flex items-center text-gray-400 hover:text-gray-600 transition-colors duration-200"
+              >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
           </div>
         </div>
 
@@ -182,9 +401,30 @@ export default function SchoolsPage() {
               )}
             </div>
           </div>
+        ) : filteredSchools.length === 0 ? (
+          <div className="text-center py-16">
+            <div className="max-w-md mx-auto">
+              <svg className="w-16 h-16 text-gray-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              <h3 className="text-xl font-semibold text-gray-600 mb-2">No Schools Match Your Search</h3>
+              <p className="text-gray-500 mb-6">
+                No schools found for &quot;{searchQuery}&quot;. Try adjusting your search terms.
+              </p>
+              <button
+                onClick={() => setSearchQuery('')}
+                className="btn-primary inline-flex items-center gap-2 py-3 px-6"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+                Clear Search
+              </button>
+            </div>
+          </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {schools.map((school) => (
+            {filteredSchools.map((school) => (
               <div
                 key={school.id}
                 className="card-primary rounded-xl overflow-hidden group"
@@ -271,10 +511,18 @@ export default function SchoolsPage() {
                       </button>
                       <button
                         onClick={() => handleDeleteSchool(school.id!)}
-                        className="w-full bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
+                        disabled={deleteLoading === school.id}
+                        className="w-full bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
                         title="Delete"
                       >
-                        Delete
+                        {deleteLoading === school.id ? (
+                          <>
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                            Deleting...
+                          </>
+                        ) : (
+                          'Delete'
+                        )}
                       </button>
                     </div>
                   )}

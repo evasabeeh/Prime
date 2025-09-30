@@ -9,7 +9,12 @@
 - Next.js 15+
 - Tailwind CSS
 - TypeScript
-- JWT Authentication
 - Nodemailer for OTP
+- API endpoints
 - CRUD
-- API ednpoints
+- Search and filter
+- Fetch profile
+- Logout functionality
+- JWT Authentication
+- Password hashing
+- Error handling and form validation
