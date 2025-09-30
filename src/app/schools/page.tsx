@@ -15,7 +15,6 @@ export default function SchoolsPage() {
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [deleteLoading, setDeleteLoading] = useState<number | null>(null);
-  const [retryCount, setRetryCount] = useState(0);
   const { user } = useAuth();
   const router = useRouter();
 
@@ -64,7 +63,6 @@ export default function SchoolsPage() {
         }
         setSchools(result.data);
         setError(null);
-        setRetryCount(0);
         
         if (showLoadingToast) {
           showToast.success(`Loaded ${result.data.length} schools successfully!`);
@@ -91,7 +89,6 @@ export default function SchoolsPage() {
       
       setError(errorMessage);
       showToast.error(errorMessage);
-      setRetryCount(prev => prev + 1);
     } finally {
       setLoading(false);
     }
